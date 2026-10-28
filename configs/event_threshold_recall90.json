@@ -1,0 +1,12 @@
+{
+  "threshold": 0.9073798060417175,
+  "target_recall": 0.9,
+  "measured_recall": 0.9,
+  "hard_negative_precision": 0.9278350515463918,
+  "true_positives": 180,
+  "positive_count": 200,
+  "hard_false_positives": 14,
+  "hard_negative_count": 22,
+  "calibration_source": "outputs/frame_detection_checkpoint10_301_350/frame_detection_results.json",
+  "calibration_scope": "All labeled edited frames and only the non-edited frames that entered per-video Top-4. Full clean-frame score distributions were not retained by the original evaluation."
+}

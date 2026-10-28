@@ -1,0 +1,27 @@
+{
+  "backbone": {
+    "model": "/data1/ZhangHuayu/models/Qwen3.5-9B",
+    "environment": "/home/ZhangHuayu/miniconda3/envs/qwen35_vlm",
+    "frozen": true,
+    "representation": "full_attention_k_proj_v_proj",
+    "decoder_layer_indices": [3, 7, 11, 15, 19, 23, 27, 31],
+    "num_layers": 8,
+    "kv_dim": 1024,
+    "visual_tokens_for_640x480": 300,
+    "excluded_layers": "24 linear-attention layers; their recurrent states are not standard K/V tensors"
+  },
+  "training": {
+    "window_size": 8,
+    "positive_windows_per_video": 4,
+    "negative_windows_per_video_per_epoch": 4,
+    "epochs": 10,
+    "target": "RMS(delta_K, delta_V) over kv_dim for each full-attention layer and visual token",
+    "input_shape": ["batch", 8, 8, 300, 1024],
+    "output_shape": ["batch", 8, 300]
+  },
+  "storage": {
+    "kv_diff_root": "/data1/ZhangHuayu/datasets/VSR-Train/kv_diff_qwen35",
+    "kv_cache_root": "/data3/ZhangHuayu/VSR-Train/kv_features/qwen35_full_attention",
+    "checkpoint_root": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_qwen35_epoch10"
+  }
+}

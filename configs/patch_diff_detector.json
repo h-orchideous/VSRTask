@@ -1,0 +1,23 @@
+{
+  "task": "temporal_patch_diff_magnitude_regression",
+  "window_size": 8,
+  "history_frames": 7,
+  "current_frames": 1,
+  "qwen_frozen": true,
+  "qwen_layers": 28,
+  "visual_tokens": 391,
+  "kv_feature_dim": 512,
+  "input_k": "[batch, 8, 28, 391, 512]",
+  "input_v": "[batch, 8, 28, 391, 512]",
+  "kv_fusion": "concatenate K and V to 1024 dimensions before input projection",
+  "detector_hidden_size": 256,
+  "temporal_transformer_layers": 2,
+  "attention_heads": 8,
+  "temporal_processing": "independent causal sequence for each Qwen layer and patch",
+  "output": "[batch, 28, 391] patch diff magnitude",
+  "positive_target": "RMS(delta_K, delta_V) over the 512-dimensional KV feature",
+  "negative_target": "all-zero [28, 391] matrix",
+  "loss": "MSE(predicted_patch_diff, target_patch_diff)",
+  "inference_layer_fusion": "mean or max over 28 Qwen layers",
+  "default_mask": "top 10 percent of the fused 391 patch scores"
+}

@@ -1,0 +1,27 @@
+{
+  "training_task": "edited_frame_kv_delta_prediction",
+  "training_unit": "one causal frame window",
+  "window_size": 8,
+  "supervised_timestep": "last frame only",
+  "uses_temporal_window": true,
+  "uses_clean_negative_frames": true,
+  "negative_target": "all-zero delta_K and delta_V",
+  "negative_sampling": "sixteen clean windows per video by default",
+  "trainable_modules": [
+    "KDiffTransformer",
+    "VDiffTransformer"
+  ],
+  "frozen_backbone": "Qwen2.5-VL-7B-Instruct",
+  "input_dim": 512,
+  "d_model": 512,
+  "num_transformer_layers": 2,
+  "num_attention_heads": 8,
+  "feedforward_dim": 2048,
+  "dropout": 0.0,
+  "backbone": "frozen Qwen2.5-VL-7B-Instruct",
+  "num_qwen_layers": 28,
+  "visual_tokens_per_frame": 391,
+  "kv_heads": 4,
+  "head_dim": 128,
+  "loss": "edited: MSE(predicted_delta, edited_kv-clean_kv); clean: MSE(predicted_delta, 0)"
+}
