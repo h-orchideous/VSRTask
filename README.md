@@ -137,6 +137,29 @@ Of the 14 incomplete semantic events, 12 were missing
 incompleteness, not queue loss. Detection and semantic event totals are both
 236.
 
+The original `v2` numbers above are preserved as the measured result. The
+writer has since been hardened so new events cannot enter `done` unless
+`where`, `what`, `anomaly_entity`, and a positive integer `anomaly_count` are
+present. Malformed free-text generations are retried; if count formatting is
+still invalid, the anomaly entity is derived from `what` and assigned count 1,
+which matches the current single-insert event construction. On restart, an
+existing incomplete semantic event is automatically moved from `done` back to
+`pending` and regenerated.
+
+Repair only incomplete events from an existing streaming run without rescanning
+the videos:
+
+```bash
+RUN_ROOT=/home/ZhangHuayu/Workspace/VSRTask/outputs/vsi_super_recall_stream_memory_qwen25_10mins_v2 \
+SEMANTIC_GPUS=0 \
+./scripts/repair_stream_semantic_qwen25.sh
+```
+
+The repair command reprocesses only invalid event JSON files, reassembles the
+chronological per-video memories, and runs schema validation. It does not rerun
+QA, so `qa/results.json` continues to describe the original memory until QA is
+explicitly executed again.
+
 Final accuracy and baselines:
 
 | Method | Correct | Accuracy |

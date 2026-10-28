@@ -56,6 +56,42 @@ def parse_narrative(text: str) -> dict[str, Any]:
     return fields
 
 
+def semantic_memory_complete(memory: dict[str, Any] | None) -> bool:
+    """Return whether an event has the fields required by final memory."""
+    if not isinstance(memory, dict):
+        return False
+    entity = memory.get("anomaly_entity")
+    count = memory.get("anomaly_count")
+    return (
+        bool(memory.get("where"))
+        and bool(memory.get("what"))
+        and bool(entity)
+        and isinstance(count, int)
+        and count > 0
+    )
+
+
+def entity_from_what(value: str | None) -> str:
+    """Derive a stable entity label when count generation is malformed."""
+    text = re.sub(r"\s+", " ", (value or "").strip().lower())
+    # The generated What field commonly appends a spatial relation. Keep the
+    # object phrase and let where/relations retain the location information.
+    text = re.split(
+        r"\s+(?:on|in|inside|near|beside|under|above|atop|against)\s+",
+        text,
+        maxsplit=1,
+    )[0]
+    text = text.strip(" .,:;\"'")
+    return text or "unknown foreground object"
+
+
+def entity_matches_what(entity: str, what: str | None) -> bool:
+    ignored = {"a", "an", "the", "of", "for", "and", "with"}
+    entity_words = set(re.findall(r"[a-z0-9]+", entity.lower())) - ignored
+    what_words = set(re.findall(r"[a-z0-9]+", (what or "").lower())) - ignored
+    return bool(entity_words & what_words)
+
+
 def generate(
     model: torch.nn.Module,
     processor: Any,
@@ -132,7 +168,9 @@ def describe_event(
         device,
         min(max_new_tokens, 64),
     )
-    if is_degenerate(narrative):
+    fields = parse_narrative(narrative)
+    narrative_attempts = [narrative]
+    if is_degenerate(narrative) or not fields.get("where") or not fields.get("what"):
         narrative = generate(
             model,
             processor,
@@ -146,6 +184,8 @@ def describe_event(
             device,
             min(max_new_tokens, 48),
         )
+        narrative_attempts.append(narrative)
+        fields = parse_narrative(narrative)
     count_prompt = (
         "The unusual foreground event was described as follows: "
         f"{narrative} "
@@ -163,8 +203,8 @@ def describe_event(
         device,
         min(max_new_tokens, 48),
     )
-    fields = parse_narrative(narrative)
     counts = parse_counts(count_response)
+    count_attempts = [count_response]
     if not counts or re.search(r"addCriterion|add[A-Z]|<\|", count_response):
         count_response = generate(
             model,
@@ -178,10 +218,39 @@ def describe_event(
             device,
             min(max_new_tokens, 48),
         )
+        count_attempts.append(count_response)
         counts = parse_counts(count_response)
-    anomaly = counts[0] if counts else {"name": None, "count": None}
+
+    fallbacks: list[str] = []
+    if not fields.get("what") and counts:
+        fields["what"] = counts[0]["name"]
+        fallbacks.append("what_from_first_count")
+    if not fields.get("what"):
+        fields["what"] = "unknown foreground object"
+        fallbacks.append("what_unknown_fallback")
+    if not fields.get("where"):
+        fields["where"] = "unspecified scene"
+        fallbacks.append("where_unspecified_fallback")
+
+    expected_entity = entity_from_what(fields.get("what"))
+    matching_index = next(
+        (
+            index
+            for index, item in enumerate(counts)
+            if entity_matches_what(str(item["name"]), expected_entity)
+        ),
+        None,
+    )
+    if matching_index is None:
+        anomaly = {"name": expected_entity, "count": 1}
+        counts.insert(0, anomaly)
+        fallbacks.append("anomaly_from_what_count_one")
+    else:
+        anomaly = counts.pop(matching_index)
+        counts.insert(0, anomaly)
+
     relations = [fields["relations"]] if fields["relations"] else []
-    return {
+    result = {
         "where": fields["where"],
         "what": fields["what"],
         "narrative": narrative,
@@ -196,8 +265,17 @@ def describe_event(
         "raw_response": {
             "narrative": narrative,
             "counts": count_response,
+            "narrative_attempts": narrative_attempts,
+            "count_attempts": count_attempts,
+        },
+        "semantic_validation": {
+            "complete": True,
+            "fallbacks": fallbacks,
         },
     }
+    if not semantic_memory_complete(result):
+        raise RuntimeError(f"Semantic memory repair failed: {result}")
+    return result
 
 
 def resolve_evidence_path(memory_path: Path, path_value: str) -> Path:

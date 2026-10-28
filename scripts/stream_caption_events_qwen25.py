@@ -14,7 +14,7 @@ import torch.distributed as dist
 from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from caption_event_memory_qwen25 import describe_event
+from caption_event_memory_qwen25 import describe_event, semantic_memory_complete
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,7 +71,17 @@ def recover_queue(run_root: Path) -> None:
             job = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if not semantic_output(run_root, job).is_file():
+        output_path = semantic_output(run_root, job)
+        valid = False
+        if output_path.is_file():
+            try:
+                payload = json.loads(output_path.read_text(encoding="utf-8"))
+                valid = semantic_memory_complete(
+                    (payload.get("event") or {}).get("episodic_memory")
+                )
+            except (OSError, json.JSONDecodeError, AttributeError):
+                valid = False
+        if not valid:
             os.replace(path, pending / path.name)
 
 
@@ -112,7 +122,16 @@ def process_job(
     job = json.loads(claimed.read_text(encoding="utf-8"))
     output_path = semantic_output(run_root, job)
     event = job["event"]
-    if not output_path.is_file():
+    output_complete = False
+    if output_path.is_file():
+        try:
+            existing_payload = json.loads(output_path.read_text(encoding="utf-8"))
+            output_complete = semantic_memory_complete(
+                (existing_payload.get("event") or {}).get("episodic_memory")
+            )
+        except (OSError, json.JSONDecodeError, AttributeError):
+            output_complete = False
+    if not output_complete:
         image_path = Path(event["evidence"]["original_image"])
         with Image.open(image_path) as source:
             image = source.convert("RGB")
@@ -132,6 +151,10 @@ def process_job(
             "query_conditioned": False,
             "streaming": True,
         }
+        if not semantic_memory_complete(description):
+            raise RuntimeError(
+                f"Refusing to mark incomplete semantic event done: {description}"
+            )
         event["episodic_memory"] = description
         atomic_json(
             output_path,
