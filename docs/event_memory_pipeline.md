@@ -25,6 +25,21 @@ video stream
 The VSR question is not available during detection or semantic memory writing.
 It is introduced only during the final QA stage.
 
+At QA time, events can optionally be filtered by detector score or retrieved by
+the entity named in the question. This is query-aware reading of an already
+written memory; it does not expose the question to detection or writing. The
+selected events always remain ordered by `peak_frame`.
+
+The semantic writer receives the original selected frame and a clean crop from
+the original pixels around the highest-scoring PatchDiff token. The red overlay
+is retained only as detector audit evidence and is not sent to the semantic
+model. The crop is an attention cue, not the memory itself. New records separate
+`anomaly`, `placement`, and `context`. A physical placement must contain both a
+relation and visible anchor; frame coordinates and generic scene labels are
+marked unresolved. Legacy flat fields remain during migration. This supports
+temporal ordering, object properties, and counting without rewriting memory for
+a particular question.
+
 ## Memory Record
 
 Each frame whose anomaly score is greater than or equal to the configured
@@ -32,6 +47,8 @@ threshold remains an independent event. Temporal merging and Top-K selection
 are disabled because adjacent inserted frames can represent different ordered
 events and the event count is unknown at inference time. There is no default
 event-count cap; `MAX_MEMORY_EVENTS` is only an optional resource safeguard.
+New runs use `configs/event_threshold_balanced.json` by default. The recorded
+legacy baseline keeps its original threshold in its output metadata.
 
 ```json
 {
@@ -40,11 +57,36 @@ event-count cap; `MAX_MEMORY_EVENTS` is only an optional resource safeguard.
   "peak_seconds": 43.0,
   "peak_score": 1.29,
   "episodic_memory": {
-    "anomaly_entity": "golden retriever toy",
-    "anomaly_count": 1,
-    "what": "A golden retriever toy appears on a round table",
+    "semantic_schema_version": 3,
+    "what": "a stationary golden retriever toy",
     "where": "on a round table",
-    "nearby_objects": [],
+    "scene": "kitchen",
+    "background": "round table, chairs, and cabinets",
+    "objects": [
+      {"name": "golden retriever toy", "count": 1},
+      {"name": "table", "count": 1},
+      {"name": "chair", "count": 2}
+    ],
+    "anomaly": {
+      "entity": "golden retriever toy",
+      "description": "a stationary golden retriever toy",
+      "count": 1
+    },
+    "placement": {
+      "relation": "on",
+      "anchor": "a round table",
+      "text": "on a round table",
+      "status": "direct",
+      "observation_text": "on a round table"
+    },
+    "context": {
+      "scene": "kitchen",
+      "summary": "round table, chairs, and cabinets",
+      "objects": [
+        {"name": "table", "count": 1},
+        {"name": "chair", "count": 2}
+      ]
+    },
     "semantic_writer": {
       "query_conditioned": false
     }
@@ -148,3 +190,23 @@ Use `stream` instead of `all` to stop after detection, semantic writing, and
 ordered memory assembly without running QA. The queue directories are
 restartable: unfinished `processing` jobs are returned to `pending`, and
 completed event files are not generated twice.
+
+## QA Event Selection
+
+The streaming launcher accepts these environment variables for QA-only runs:
+
+```bash
+QA_EVENT_SCORE_THRESHOLD=0.9073798060417175 \
+QA_EVENT_RETRIEVAL=all \
+QA_OUTPUT_DIR="$RUN_ROOT/qa_old_threshold" \
+./scripts/run_stream_event_memory_qwen25.sh qa
+
+QA_EVENT_RETRIEVAL=entity \
+QA_OUTPUT_DIR="$RUN_ROOT/qa_entity_retrieval" \
+./scripts/run_stream_event_memory_qwen25.sh qa
+```
+
+`entity` retrieval extracts the target from the VSR question, matches it only
+against `what`, `anomaly_entity`, and the visible-object inventory, and preserves
+time order. It does not inspect answer options. If no semantic event matches,
+the evaluator falls back to the score-filtered memory and records the fallback.

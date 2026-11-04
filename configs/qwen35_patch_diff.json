@@ -11,6 +11,7 @@
     "excluded_layers": "24 linear-attention layers; their recurrent states are not standard K/V tensors"
   },
   "training": {
+    "sample_range": [1, 377],
     "window_size": 8,
     "positive_windows_per_video": 4,
     "negative_windows_per_video_per_epoch": 4,
@@ -22,6 +23,7 @@
   "storage": {
     "kv_diff_root": "/data1/ZhangHuayu/datasets/VSR-Train/kv_diff_qwen35",
     "kv_cache_root": "/data3/ZhangHuayu/VSR-Train/kv_features/qwen35_full_attention",
-    "checkpoint_root": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_qwen35_epoch10"
+    "checkpoint_root": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_qwen35_1_377_epoch10_4gpu",
+    "checkpoint": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_qwen35_1_377_epoch10_4gpu/checkpoint-10.pt"
   }
 }

@@ -3,6 +3,73 @@
 Patch-difference detection and explicit event memory for long-video spatial
 and temporal reasoning.
 
+## Versioned Pipelines
+
+The model-specific systems are isolated under two entry directories:
+
+| Version | Detection features | Semantic writer | QA | Entry directory |
+|---|---|---|---|---|
+| Qwen2.5 | Qwen2.5-VL 28-layer K/V | Qwen2.5-VL | Qwen2.5-VL | `pipelines/qwen25` |
+| Qwen3.5 | Qwen3.5 8 full-attention-layer K/V | Qwen3.5 | Qwen3.5 | `pipelines/qwen35` |
+
+Each directory fixes its own model, environment, checkpoint, feature cache,
+threshold, training entry point, and official VSR entry point. Shared detector,
+data, and memory-schema implementations remain under `vsrtask/` and `scripts/`.
+Do not mix checkpoints, K/V caches, or thresholds across the two versions.
+
+## Official 10-Minute Result Comparison
+
+The table below records completed end-to-end runs on the 60 samples in the
+official VSI-SUPER-Recall `test_10mins.parquet`. Detection, semantic writing,
+and QA use the same Qwen version within each row. These are full streaming
+pipelines: every video frame is scanned before the query is exposed, events
+crossing the fixed threshold are written immediately, and QA reads the ordered
+text memory only.
+
+| Pipeline | Detector threshold | Written events | Zero-event videos | Correct | Accuracy |
+|---|---:|---:|---:|---:|---:|
+| Qwen2.5 PatchDiff + Qwen2.5 writer/QA (`v2`) | `0.9073798` | 236 | 1 / 60 | **36 / 60** | **60.00%** |
+| Qwen3.5 PatchDiff + Qwen3.5 writer/QA (`t1089`) | `1.0890907` | 197 | 7 / 60 | 29 / 60 | 48.33% |
+
+The completed Qwen3.5 run is stored under:
+
+```text
+outputs/vsi_super_recall_stream_memory_qwen35_10mins_t1089_full
+```
+
+Its queue and memory are complete: 197 detector events produced 197 validated
+semantic events, all 60 per-video memory files were assembled, the QA memory
+digest matches the current memory, and `validation_report.json` reports
+`valid=true`. One event initially failed because the contamination filter
+mistook the substring `adde` in `ladder` for a control token. The filter is now
+case-sensitive for camel-case control names, the event was regenerated, and a
+regression test covers `on the ladder`.
+
+The Qwen3.5 result is strongly associated with event recall:
+
+| Events written for one video | Videos | Correct | Accuracy |
+|---|---:|---:|---:|
+| 0 | 7 | 1 | 14.29% |
+| 1-3 | 19 | 5 | 26.32% |
+| Exactly 4 | 24 | 17 | 70.83% |
+| More than 4 | 10 | 6 | 60.00% |
+
+Thus 36/60 videos do not receive exactly four events, and these videos account
+for most errors. A lower Qwen3.5 threshold of `1.0` is being evaluated in a
+separate output directory so the `t1089` result remains reproducible:
+
+```text
+config:  configs/event_threshold_qwen35_t1000.json
+output:  outputs/vsi_super_recall_stream_memory_qwen35_10mins_t1000_full
+log:     logs/qwen35_official_10mins_t1000_full.log
+```
+
+Before semantic generation, replaying `1.0` over the saved frame-score streams
+predicts 362 candidates, 47/60 videos with at least four candidates, and two
+zero-event videos. These are candidate-count diagnostics, not the final `1.0`
+QA result; the row will be added to the completed table only after the new
+memory and QA validation finish.
+
 ## Validated Qwen2.5 + Qwen2.5 System
 
 The currently validated result uses **Qwen2.5-VL for both sides of the
@@ -55,10 +122,13 @@ not exposed to the detector or semantic writer.
 6. Atomically enqueue the event through `pending -> processing -> done`.
    Atomic rename lets semantic workers claim each event once and makes the
    queue restartable.
-7. A separate Qwen2.5-VL semantic worker reads the **original selected frame**,
-   without seeing the downstream VSR question. It writes `where`, `what`, a
-   short narrative, anomaly entity/count, nearby entities, spatial relations,
-   the raw model response, and the semantic-writer provenance.
+7. A separate Qwen2.5-VL semantic worker reads the **original selected frame
+   and an unmodified crop around the highest-scoring PatchDiff token**, without
+   seeing the downstream VSR question. The red overlay remains audit evidence
+   and is never sent to the semantic model. The clean crop directs attention
+   without introducing artificial objects. Schema v3 records the anomaly,
+   grounded physical placement, and full-frame context separately. It does not
+   infer the question, hidden cause, or temporal change.
 8. Because multiple semantic workers can finish out of order, completed
    events are assembled by `peak_frame` into one chronological memory file
    per video. No event is removed during assembly.
@@ -77,12 +147,36 @@ A semantic event has the following effective structure:
   "score_margin": 0.4500,
   "episodic_memory": {
     "when": {"frame": 85, "seconds": 85.0},
-    "where": "Living room",
-    "what": "Pikachu plush toy inside trash can",
-    "anomaly_entity": "pikachu plush toy",
-    "anomaly_count": 1,
-    "nearby_objects": [{"name": "trash can", "count": 1}],
-    "narrative": "Where: ...; What: ...; Relations: ...",
+    "semantic_schema_version": 3,
+    "what": "A stationary Pikachu plush toy",
+    "where": "inside a trash can",
+    "scene": "Living room",
+    "background": "a trash can beside a sofa and table",
+    "objects": [
+      {"name": "pikachu plush toy", "count": 1},
+      {"name": "trash can", "count": 1},
+      {"name": "sofa", "count": 1}
+    ],
+    "anomaly": {
+      "entity": "pikachu plush toy",
+      "description": "A stationary Pikachu plush toy",
+      "count": 1
+    },
+    "placement": {
+      "relation": "inside",
+      "anchor": "a trash can",
+      "text": "inside a trash can",
+      "status": "direct",
+      "observation_text": "inside a trash can"
+    },
+    "context": {
+      "scene": "Living room",
+      "summary": "a trash can beside a sofa and table",
+      "objects": [
+        {"name": "trash can", "count": 1},
+        {"name": "sofa", "count": 1}
+      ]
+    },
     "semantic_writer": {
       "model": "/data1/ZhangHuayu/models/Qwen2.5-VL-7B-Instruct",
       "query_conditioned": false,
@@ -137,14 +231,37 @@ Of the 14 incomplete semantic events, 12 were missing
 incompleteness, not queue loss. Detection and semantic event totals are both
 236.
 
-The original `v2` numbers above are preserved as the measured result. The
-writer has since been hardened so new events cannot enter `done` unless
-`where`, `what`, `anomaly_entity`, and a positive integer `anomaly_count` are
-present. Malformed free-text generations are retried; if count formatting is
-still invalid, the anomaly entity is derived from `what` and assigned count 1,
-which matches the current single-insert event construction. On restart, an
-existing incomplete semantic event is automatically moved from `done` back to
-`pending` and regenerated.
+### Threshold For Subsequent Runs
+
+The `0.9073798060417175` threshold above belongs to the recorded 60% baseline
+and is not changed retroactively. New runs now default to
+`configs/event_threshold_balanced.json`, whose threshold is
+`0.8880652189254761`.
+
+On the held-out 301-350 edited-frame scores, the new point changes recall from
+`180/200 = 90.0%` to `181/200 = 90.5%`, with hard-negative precision `91.4%`.
+Applied to the already stored official 10-minute score streams without using
+their QA labels, it would trigger 286 events over 60 videos: mean 4.77, median
+4, range 2-10, and no zero-event video. By comparison, lowering the threshold
+to the 95%-recall point (`0.6641`) would trigger 2,755 events, or 45.9 per video,
+which is too noisy and expensive for semantic memory writing.
+
+The calibration utilities now support saving every frame score with
+`evaluate_temporal_frame_detection.py --save-frame-scores`. Once that complete
+clean-frame distribution has been generated, `calibrate_event_threshold.py`
+can replace the balanced configuration using explicit recall, clean-frame FPR,
+and precision constraints.
+
+The original `v2` numbers above are preserved as the measured **legacy-writer
+baseline**. The structured writer is a new semantic schema and must be evaluated
+in a separate output directory before comparing accuracy. New events cannot
+enter `done` unless the observation, structured placement, and visible-object
+inventory are present and free of prompt/template contamination.
+Malformed generations are retried; if the inventory omits the anomaly, it is
+derived from the anomaly description with count one, which matches the current
+single-insert construction. Existing legacy records can still be repaired
+locally; incomplete records are returned from `done` to `pending` for model
+regeneration.
 
 Repair only incomplete events from an existing streaming run without rescanning
 the videos:
@@ -156,9 +273,49 @@ SEMANTIC_GPUS=0 \
 ```
 
 The repair command reprocesses only invalid event JSON files, reassembles the
-chronological per-video memories, and runs schema validation. It does not rerun
-QA, so `qa/results.json` continues to describe the original memory until QA is
-explicitly executed again.
+chronological per-video memories, and runs semantic-quality validation. It does
+not rerun QA, so `qa/results.json` continues to describe the previous memory
+until QA is explicitly executed again. QA reruns constrain decoding to one of
+`A/B/C/D` and archive the previous result files under `qa/archive/<timestamp>/`
+before writing new results.
+
+### Full-Frame Writer A/B Run
+
+Do not overwrite the legacy semantic memories when evaluating the new writer.
+Reuse the already-computed detector evidence, write a second semantic memory
+set, then point QA at that set:
+
+```bash
+cd /home/ZhangHuayu/Workspace/VSRTask
+conda activate vsr_train
+
+RUN_ROOT=/home/ZhangHuayu/Workspace/VSRTask/outputs/vsi_super_recall_stream_memory_qwen25_10mins_v2
+NEW_MEMORY_ROOT="$RUN_ROOT/semantic/memories_full_frame_v2"
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+PYTHONNOUSERSITE=1 \
+PYTHONPATH=/home/ZhangHuayu/Workspace/VSRTask \
+/home/ZhangHuayu/miniconda3/envs/vsr_train/bin/torchrun \
+  --standalone --nproc_per_node=4 \
+  scripts/caption_event_memory_qwen25.py \
+  --model /data1/ZhangHuayu/models/Qwen2.5-VL-7B-Instruct \
+  --memory-root "$RUN_ROOT/detection/memories" \
+  --output-root "$NEW_MEMORY_ROOT" \
+  --dtype bfloat16 \
+  --overwrite
+
+DURATION=10mins \
+RUN_ROOT="$RUN_ROOT" \
+SEMANTIC_GPUS=0,1,2,3 \
+QA_MEMORY_ROOT="$NEW_MEMORY_ROOT" \
+QA_OUTPUT_DIR="$RUN_ROOT/qa_full_frame_v2" \
+./scripts/run_stream_event_memory_qwen25.sh qa
+```
+
+The second command writes `qa_full_frame_v2/results.json` and
+`qa_full_frame_v2/validation_report.json`. Compare those with the legacy
+`qa/results.json`; detector events are identical, so this isolates the writing
+and reading policy.
 
 Final accuracy and baselines:
 
@@ -187,6 +344,99 @@ validation_report.json
 ```
 
 See `docs/event_memory_pipeline.md` for launcher and queue details.
+
+### Memory QA Ablations (2026-10-30)
+
+The following ablations reuse the same 60 official 10-minute videos, the same
+Qwen2.5-VL QA model, and the same source semantic memory. They change only the
+event selection, location text, or memory view supplied to QA.
+
+| Memory supplied to QA | Events | Correct | Accuracy |
+|---|---:|---:|---:|
+| Balanced threshold (`0.8880652`), all events | 286 | 32 / 60 | 53.33% |
+| Legacy threshold (`0.9073798`), all events | 236 | **35 / 60** | **58.33%** |
+| Balanced threshold, strict target-entity retrieval | 172 | 32 / 60 | 53.33% |
+| Balanced threshold, isolated physical-`where` rewrite | 286 | 30 / 60 | 50.00% |
+| Balanced threshold, anomaly + placement only | 286 | 29 / 60 | 48.33% |
+| Legacy threshold, anomaly + placement only | 236 | 30 / 60 | 50.00% |
+| Legacy threshold, physical `where` + compact view | 236 | 31 / 60 | 51.67% |
+| Legacy threshold, hierarchical context fallback | 236 | 30 / 60 | 50.00% |
+
+The legacy-threshold filter improves four previously wrong samples and regresses
+one, for a net gain of three. This confirms that the 50 additional low-score
+events introduce useful recall but also more QA noise. Strict entity retrieval
+does not improve aggregate accuracy: semantic aliases recover a target match in
+all 60 videos, but 34 videos retain fewer than four events, so hard filtering
+also removes useful but imperfectly captioned evidence.
+
+The first physical-`where` experiment rewrote all semantic fields and scored
+24/60; it is retained only as a rejected, confounded ablation. The corrected
+experiment preserved `what`, `scene`, `background`, and `objects` byte-for-byte
+and rewrote only `where`: 283/286 locations changed, no image-coordinate answer
+survived validation, and accuracy was 30/60. Therefore physical-`where` remains
+an optional experiment and is not enabled in the default writer.
+
+Removing context is also rejected. Under the legacy threshold, compacting each
+event to only anomaly and placement regresses from 35/60 to 30/60. Making scene
+and background an explicit fallback also scores 30/60. The full view is helping
+when the old `where` value is vague or wrong, so field formatting alone cannot
+repair the memory. At the legacy threshold, 21/60 videos contain fewer than four
+events; those samples score 8/21, compared with 27/39 for videos containing at
+least four events. Missing events and incorrect semantic grounding are therefore
+the main remaining errors.
+
+### Structured Semantic Memory v3
+
+Newly generated memories use a nested contract rather than adding more flat
+fields:
+
+```json
+{
+  "anomaly": {
+    "entity": "pikachu",
+    "description": "yellow Pikachu toy",
+    "count": 1
+  },
+  "placement": {
+    "relation": "on",
+    "anchor": "the chair",
+    "text": "on the chair",
+    "status": "direct",
+    "observation_text": "on the chair"
+  },
+  "context": {
+    "scene": "bedroom",
+    "summary": "a bed, nightstand, and closed door",
+    "objects": [{"name": "bed", "count": 1}]
+  }
+}
+```
+
+`placement.status` is `direct`, `targeted_retry`, or `unresolved`. A location is
+grounded only when it contains a physical relation and anchor. Image coordinates
+and generic values such as `center of frame`, `visible scene`, or `office
+setting` are rejected. An unresolved placement remains explicit rather than
+allowing background objects to masquerade as the target location. The legacy
+flat fields remain in each event temporarily so existing artifacts and tools
+continue to load.
+
+Reproduce the two event-selection runs on GPUs 4-7:
+
+```bash
+cd /home/ZhangHuayu/Workspace/VSRTask
+GPUS=4,5,6,7 ./scripts/run_qwen25_memory_qa_ablations.sh
+```
+
+Reproduce the isolated location rewrite and its QA run:
+
+```bash
+GPUS=4,5,6,7 ./scripts/run_qwen25_physical_where_ablation.sh
+```
+
+The QA evaluator also exposes the policies directly through
+`--event-score-threshold` and `--event-retrieval {all,entity}`. Each prediction
+records source, thresholded, and retrieved event counts plus the extracted query
+entity and any retrieval fallback.
 
 ## Legacy Full-Delta Training Task
 

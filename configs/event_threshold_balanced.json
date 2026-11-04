@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "threshold": 0.8880652189254761,
+  "selection_rule": "highest_threshold_reaching_90.5_percent_labeled_recall",
+  "calibration_source": "outputs/frame_detection_checkpoint10_301_350/frame_detection_results.json",
+  "calibration_samples": 50,
+  "positive_frames": 200,
+  "measured_recall": 0.905,
+  "true_positives": 181,
+  "hard_negative_count": 22,
+  "hard_false_positives": 17,
+  "hard_negative_precision": 0.9141414141414141,
+  "operational_score_distribution": {
+    "source": "outputs/vsi_super_recall_stream_memory_qwen25_10mins_v2/detection/frame_scores/10mins",
+    "labels_used": false,
+    "videos": 60,
+    "frames": 39844,
+    "threshold_events": 286,
+    "mean_events_per_video": 4.766666666666667,
+    "median_events_per_video": 4.0,
+    "min_events_per_video": 2,
+    "max_events_per_video": 10,
+    "videos_with_zero_events": 0
+  },
+  "calibration_scope": "All labeled edited-frame scores and Top-4 hard negatives from held-out samples 301-350. The operational check uses only unlabeled score counts, not QA answers.",
+  "note": "This balanced threshold replaces the legacy 0.9073798060417175 default. Recalibrate again after full clean-frame scores are generated with --save-frame-scores."
+}

@@ -8,7 +8,7 @@ DATASET_ROOT=${DATASET_ROOT:-/data1/ZhangHuayu/datasets/VSI-SUPER-Recall}
 SOURCE_PARQUET=${SOURCE_PARQUET:-$DATASET_ROOT/test_10mins.parquet}
 OUTPUT_ROOT=${OUTPUT_ROOT:-$VSR_ROOT/outputs/vsi_super_recall_event_memory}
 PYTHON_BIN=${PYTHON_BIN:-/home/ZhangHuayu/miniconda3/envs/vsr_train/bin/python}
-THRESHOLD_CONFIG=${THRESHOLD_CONFIG:-$VSR_ROOT/configs/event_threshold_recall90.json}
+THRESHOLD_CONFIG=${THRESHOLD_CONFIG:-$VSR_ROOT/configs/event_threshold_balanced.json}
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 export PYTHONNOUSERSITE=1

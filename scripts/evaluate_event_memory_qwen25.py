@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,8 @@ import pandas as pd
 import torch
 import torch.distributed as dist
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+from vsrtask.qa_event_selection import EventSelection, select_events
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +29,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-range", nargs=2, type=int)
     parser.add_argument("--dtype", choices=("float16", "bfloat16"), default="bfloat16")
     parser.add_argument("--max-new-tokens", type=int, default=16)
+    parser.add_argument(
+        "--device-map-auto",
+        action="store_true",
+        help="Shard one model process across all visible GPUs with Accelerate.",
+    )
+    parser.add_argument(
+        "--max-memory-per-gpu",
+        default="10GiB",
+        help="Per-GPU weight budget used with --device-map-auto.",
+    )
+    parser.add_argument(
+        "--event-score-threshold",
+        type=float,
+        help="Evaluate only memory events whose peak_score meets this threshold.",
+    )
+    parser.add_argument(
+        "--event-retrieval",
+        choices=("all", "entity"),
+        default="all",
+        help="Optionally retrieve events matching the entity named in the question.",
+    )
+    parser.add_argument(
+        "--memory-view",
+        choices=("full", "vsr_compact", "vsr_hierarchical"),
+        default="full",
+        help=(
+            "full includes every field; vsr_compact exposes only anomaly and "
+            "placement; vsr_hierarchical keeps context as an explicit fallback."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -51,35 +85,106 @@ def memory_path_for(memory_root: Path, video_path: str) -> Path:
     return memory_root / relative.parent / f"{relative.stem}.json"
 
 
+def memory_set_digest(memory_root: Path) -> str:
+    digest = hashlib.sha256()
+    paths = sorted(memory_root.rglob("*.json"))
+    if not paths:
+        raise FileNotFoundError(f"No semantic memories under {memory_root}")
+    for path in paths:
+        digest.update(str(path.relative_to(memory_root)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def format_counts(memory: dict[str, Any]) -> str:
-    entities = memory.get("entities") or []
+    entities = memory.get("objects") or memory.get("entities") or []
     return ", ".join(
         f"{item.get('name')}={item.get('count')}" for item in entities
     ) or "none"
 
 
-def format_memory(memory: dict[str, Any]) -> str:
-    events = sorted(memory.get("events", []), key=lambda item: item["peak_frame"])
+def format_memory(events: list[dict[str, Any]], memory_view: str) -> str:
     if not events:
         return "No anomaly events were written."
     lines = []
     for position, event in enumerate(events, start=1):
         episodic = event.get("episodic_memory") or {}
-        relations = episodic.get("dynamic_scene_relationships", {}).get(
-            "location_relationships", []
+        schema_version = int(episodic.get("semantic_schema_version", 1))
+        anomaly = episodic.get("anomaly") or {}
+        placement = episodic.get("placement") or {}
+        context = episodic.get("context") or {}
+        anomaly_text = anomaly.get("entity") or episodic.get("what") or "unknown"
+        placement_text = placement.get("text") or episodic.get("where") or "unknown"
+        scene_text = context.get("scene") or episodic.get("scene") or "unknown"
+        background_text = (
+            context.get("summary") or episodic.get("background") or "unknown"
         )
+        if memory_view == "vsr_compact":
+            lines.append(
+                " | ".join(
+                    [
+                        f"Event {position}",
+                        f"anomaly={anomaly_text}",
+                        f"placement={placement_text}",
+                    ]
+                )
+            )
+            continue
+        if memory_view == "vsr_hierarchical":
+            lines.extend(
+                [
+                    f"Event {position}",
+                    f"  anomaly: {anomaly_text}",
+                    f"  primary_placement: {placement_text}",
+                    "  fallback_context: "
+                    + "; ".join(
+                        [
+                            f"scene={scene_text}",
+                            f"background={background_text}",
+                            f"visible_objects={format_counts(episodic)}",
+                        ]
+                    ),
+                ]
+            )
+            continue
+        if schema_version >= 3:
+            lines.append(
+                " | ".join(
+                    [
+                        f"Event {position}",
+                        f"anomaly.entity={anomaly_text}",
+                        f"anomaly.attributes={anomaly.get('description') or episodic.get('what') or 'unknown'}",
+                        f"anomaly.count={anomaly.get('count', 'unknown')}",
+                        f"placement={placement_text}",
+                        f"placement.status={placement.get('status') or 'unknown'}",
+                        f"context.scene={scene_text}",
+                        f"context.summary={background_text}",
+                    ]
+                )
+            )
+            continue
+        if schema_version >= 2:
+            lines.append(
+                " | ".join(
+                    [
+                        f"Event {position}",
+                        f"what={episodic.get('what') or 'unknown'}",
+                        f"where={episodic.get('where') or 'unknown'}",
+                        f"scene={episodic.get('scene') or 'unknown'}",
+                        f"background={episodic.get('background') or 'unknown'}",
+                        f"objects={format_counts(episodic)}",
+                    ]
+                )
+            )
+            continue
         lines.append(
             " | ".join(
                 [
                     f"Event {position}",
-                    f"frame={event.get('peak_frame')}",
-                    f"time={float(event.get('peak_seconds', 0.0)):.3f}s",
-                    f"score={float(event.get('peak_score', 0.0)):.4f}",
-                    f"anomaly_entity={episodic.get('anomaly_entity') or 'unknown'}",
-                    f"anomaly_count={episodic.get('anomaly_count') if episodic.get('anomaly_count') is not None else 'unknown'}",
                     f"what={episodic.get('what') or 'unknown'}",
                     f"where={episodic.get('where') or 'unknown'}",
-                    f"relations={'; '.join(relations) if relations else 'none'}",
                     f"counts={format_counts(episodic)}",
                 ]
             )
@@ -87,15 +192,27 @@ def format_memory(memory: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(row: dict[str, Any], memory: dict[str, Any]) -> str:
+def build_prompt(
+    row: dict[str, Any], selection: EventSelection, memory_view: str
+) -> str:
     options = "\n".join(str(option) for option in row["options"])
+    hierarchy_instruction = ""
+    if memory_view == "vsr_hierarchical":
+        hierarchy_instruction = (
+            " For each target event, treat primary_placement as the preferred "
+            "location evidence. Consult fallback_context only when that placement "
+            "is vague, non-physical, or unknown. Objects merely listed in fallback "
+            "context are not automatically the target object's location."
+        )
     return (
         "You are answering a video temporal-order multiple-choice question from "
         "an event memory. The memory was created before seeing the question and "
         "is already ordered by video time. Some detected events can be irrelevant "
         "or missing. Match the entity named in the question to the event descriptions, "
-        "then compare its chronological locations with the options.\n\n"
-        f"Event memory:\n{format_memory(memory)}\n\n"
+        "then compare its chronological locations with the options."
+        + hierarchy_instruction
+        + "\n\n"
+        f"Event memory:\n{format_memory(selection.events, memory_view)}\n\n"
         f"Question:\n{str(row['question']).strip()}\n"
         f"Options:\n{options}\n\n"
         "Return only one option letter: A, B, C, or D."
@@ -121,12 +238,26 @@ def generate_answer(
         key: value.to(device) if torch.is_tensor(value) else value
         for key, value in batch.items()
     }
+    allowed_token_ids: set[int] = set()
+    for choice in "ABCD":
+        for candidate in (choice, f" {choice}"):
+            token_ids = processor.tokenizer.encode(
+                candidate, add_special_tokens=False
+            )
+            if len(token_ids) == 1:
+                allowed_token_ids.add(token_ids[0])
+    if not allowed_token_ids:
+        raise RuntimeError("Tokenizer has no single-token A/B/C/D candidates")
+
     with torch.inference_mode():
         output = model.generate(
             **batch,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=1,
             do_sample=False,
             use_cache=True,
+            prefix_allowed_tokens_fn=lambda _batch_id, _input_ids: list(
+                allowed_token_ids
+            ),
         )
     generated = output[:, batch["input_ids"].shape[1] :]
     return processor.batch_decode(
@@ -147,12 +278,25 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def archive_previous_results(output_dir: Path) -> None:
+    """Keep paired QA artifacts so a rerun cannot erase the prior baseline."""
+    existing = [
+        output_dir / "results.json",
+        *output_dir.glob("predictions.rank*.jsonl"),
+    ]
+    existing = [path for path in existing if path.is_file()]
+    if not existing:
+        return
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive = output_dir / "archive" / timestamp
+    archive.mkdir(parents=True, exist_ok=False)
+    for path in existing:
+        os.replace(path, archive / path.name)
+    print(f"[qa-archive] previous_results={archive}", flush=True)
+
+
 def main() -> int:
     args = parse_args()
-    device, rank, world_size = setup_distributed()
-    dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
     table = pd.read_parquet(args.source_parquet).sort_values("video_path")
     if args.sample_range:
         start, end = args.sample_range
@@ -160,16 +304,54 @@ def main() -> int:
             table["video_path"].map(lambda value: start <= sample_id(value) <= end)
         ]
     rows = table.to_dict("records")
+    missing_memories = [
+        memory_path_for(args.memory_root, row["video_path"])
+        for row in rows
+        if not memory_path_for(args.memory_root, row["video_path"]).is_file()
+    ]
+    if missing_memories:
+        preview = ", ".join(str(path) for path in missing_memories[:5])
+        raise FileNotFoundError(
+            f"Missing {len(missing_memories)}/{len(rows)} semantic memories "
+            f"before model loading. First missing: {preview}"
+        )
+
+    device, rank, world_size = setup_distributed()
+    if args.device_map_auto and world_size > 1:
+        raise ValueError("--device-map-auto requires a single process")
+    dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if rank == 0:
+        archive_previous_results(args.output_dir)
+    if world_size > 1:
+        dist.barrier(device_ids=[device.index])
+
     local_rows = rows[rank::world_size]
+    current_memory_digest = memory_set_digest(args.memory_root)
 
     processor = AutoProcessor.from_pretrained(str(args.model), local_files_only=True)
+    model_kwargs: dict[str, Any] = {}
+    if args.device_map_auto:
+        model_kwargs.update(
+            device_map="auto",
+            max_memory={
+                **{
+                    index: args.max_memory_per_gpu
+                    for index in range(torch.cuda.device_count())
+                },
+                "cpu": "64GiB",
+            },
+        )
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         str(args.model),
         torch_dtype=dtype,
         local_files_only=True,
         low_cpu_mem_usage=True,
         attn_implementation="eager",
-    ).to(device)
+        **model_kwargs,
+    )
+    if not args.device_map_auto:
+        model = model.to(device)
     model.eval()
 
     results = []
@@ -178,7 +360,13 @@ def main() -> int:
         if not memory_path.is_file():
             raise FileNotFoundError(f"Missing memory: {memory_path}")
         memory = json.loads(memory_path.read_text(encoding="utf-8"))
-        prompt = build_prompt(row, memory)
+        selection = select_events(
+            memory,
+            str(row["question"]),
+            score_threshold=args.event_score_threshold,
+            retrieval=args.event_retrieval,
+        )
+        prompt = build_prompt(row, selection, args.memory_view)
         response = generate_answer(
             model, processor, prompt, device, args.max_new_tokens
         )
@@ -188,7 +376,13 @@ def main() -> int:
             "sample_id": sample_id(row["video_path"]),
             "video_path": row["video_path"],
             "memory_path": str(memory_path),
-            "event_count": len(memory.get("events", [])),
+            "event_count": selection.retrieved_event_count,
+            "source_event_count": selection.source_event_count,
+            "threshold_event_count": selection.threshold_event_count,
+            "retrieved_event_count": selection.retrieved_event_count,
+            "query_entity": selection.query_entity,
+            "retrieval_fallback": selection.retrieval_fallback,
+            "memory_view": args.memory_view,
             "question": row["question"],
             "options": [str(option) for option in row["options"]],
             "target": target,
@@ -220,7 +414,13 @@ def main() -> int:
         summary = {
             "model": str(args.model),
             "memory_root": str(args.memory_root),
+            "memory_digest": current_memory_digest,
             "source_parquet": str(args.source_parquet),
+            "event_selection": {
+                "score_threshold": args.event_score_threshold,
+                "retrieval": args.event_retrieval,
+                "memory_view": args.memory_view,
+            },
             "samples": len(merged),
             "correct": correct,
             "accuracy": correct / len(merged) if merged else 0.0,

@@ -22,12 +22,16 @@ case "$DURATION" in
 esac
 SOURCE_PARQUET=${SOURCE_PARQUET:-$DATASET_ROOT/test_${DURATION}.parquet}
 RUN_ROOT=${RUN_ROOT:-$VSR_ROOT/outputs/vsi_super_recall_stream_memory_qwen25_${DURATION}}
-THRESHOLD_CONFIG=${THRESHOLD_CONFIG:-$VSR_ROOT/configs/event_threshold_recall90.json}
+QA_MEMORY_ROOT=${QA_MEMORY_ROOT:-$RUN_ROOT/semantic/memories}
+QA_OUTPUT_DIR=${QA_OUTPUT_DIR:-$RUN_ROOT/qa}
+THRESHOLD_CONFIG=${THRESHOLD_CONFIG:-$VSR_ROOT/configs/event_threshold_balanced.json}
 DETECT_GPUS=${DETECT_GPUS:-0,1}
 SEMANTIC_GPUS=${SEMANTIC_GPUS:-2,3}
 DETECT_MASTER_PORT=${DETECT_MASTER_PORT:-29610}
 SEMANTIC_MASTER_PORT=${SEMANTIC_MASTER_PORT:-29620}
 QA_MASTER_PORT=${QA_MASTER_PORT:-29630}
+QA_EVENT_RETRIEVAL=${QA_EVENT_RETRIEVAL:-all}
+QA_MEMORY_VIEW=${QA_MEMORY_VIEW:-full}
 
 export PYTHONNOUSERSITE=1
 export PYTHONPATH="$VSR_ROOT:${PYTHONPATH:-}"
@@ -89,7 +93,7 @@ run_stream() {
     "$PYTHON_BIN" -m torch.distributed.run \
         --nproc_per_node "$DETECT_PROCESSES" \
         --master_port "$DETECT_MASTER_PORT" \
-        "$VSR_ROOT/scripts/stream_detect_events.py" \
+        "$VSR_ROOT/scripts/stream_detect_events_qwen25.py" \
         --model "$MODEL" \
         --checkpoint "$CHECKPOINT" \
         --dataset-root "$DATASET_ROOT" \
@@ -124,16 +128,24 @@ run_stream() {
 }
 
 run_qa() {
+    QA_SELECTION_ARGS=(
+        --event-retrieval "$QA_EVENT_RETRIEVAL"
+        --memory-view "$QA_MEMORY_VIEW"
+    )
+    if [[ -n "${QA_EVENT_SCORE_THRESHOLD:-}" ]]; then
+        QA_SELECTION_ARGS+=(--event-score-threshold "$QA_EVENT_SCORE_THRESHOLD")
+    fi
     CUDA_VISIBLE_DEVICES="$SEMANTIC_GPUS" \
     "$PYTHON_BIN" -m torch.distributed.run \
         --nproc_per_node "$SEMANTIC_PROCESSES" \
         --master_port "$QA_MASTER_PORT" \
         "$VSR_ROOT/scripts/evaluate_event_memory_qwen25.py" \
         --model "$MODEL" \
-        --memory-root "$RUN_ROOT/semantic/memories" \
+        --memory-root "$QA_MEMORY_ROOT" \
         --source-parquet "$SOURCE_PARQUET" \
-        --output-dir "$RUN_ROOT/qa" \
+        --output-dir "$QA_OUTPUT_DIR" \
         --dtype "${DTYPE:-bfloat16}" \
+        "${QA_SELECTION_ARGS[@]}" \
         "${RANGE_ARGS[@]}"
 }
 
@@ -147,11 +159,21 @@ case "$MODE" in
         ;;
     qa)
         run_qa
+        "$PYTHON_BIN" scripts/validate_event_memory_pipeline.py \
+            --run-root "$RUN_ROOT" \
+            --semantic-root "$QA_MEMORY_ROOT" \
+            --qa-path "$QA_OUTPUT_DIR/results.json" \
+            --output-path "$QA_OUTPUT_DIR/validation_report.json" \
+            --require-qa
         ;;
     all)
         run_stream
         run_qa
         "$PYTHON_BIN" scripts/validate_event_memory_pipeline.py \
-            --run-root "$RUN_ROOT" --require-qa
+            --run-root "$RUN_ROOT" \
+            --semantic-root "$QA_MEMORY_ROOT" \
+            --qa-path "$QA_OUTPUT_DIR/results.json" \
+            --output-path "$QA_OUTPUT_DIR/validation_report.json" \
+            --require-qa
         ;;
 esac

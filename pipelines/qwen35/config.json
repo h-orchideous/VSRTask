@@ -1,0 +1,14 @@
+{
+  "version": "qwen35",
+  "python": "/home/ZhangHuayu/miniconda3/envs/qwen35_vlm/bin/python",
+  "model": "/data1/ZhangHuayu/models/Qwen3.5-9B",
+  "checkpoint": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_qwen35_1_377_epoch10_4gpu/checkpoint-10.pt",
+  "kv_diff_root": "/data1/ZhangHuayu/datasets/VSR-Train/kv_diff_qwen35",
+  "kv_cache_root": "/data3/ZhangHuayu/VSR-Train/kv_features/qwen35_full_attention",
+  "threshold_config": "/home/ZhangHuayu/Workspace/VSRTask/configs/event_threshold_qwen35.json",
+  "feature_layers": 8,
+  "visual_tokens": 300,
+  "kv_dim": 1024,
+  "semantic_writer": "Qwen3.5-9B",
+  "qa_model": "Qwen3.5-9B"
+}

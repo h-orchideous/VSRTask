@@ -51,6 +51,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer-fusion", choices=("mean", "max"), default="mean")
     parser.add_argument("--last-n-layers", type=int)
     parser.add_argument("--dtype", choices=("float16", "bfloat16"), default="bfloat16")
+    parser.add_argument(
+        "--save-frame-scores",
+        action="store_true",
+        help=(
+            "Store every frame score in each sample report so a streaming "
+            "threshold can be calibrated against all clean frames."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -117,6 +125,7 @@ def evaluate_one(
     video_path: Path,
     truth: list[int],
     frame_rows: list[dict[str, Any]],
+    save_frame_scores: bool,
 ) -> dict[str, Any]:
     ranked = sorted(frame_rows, key=lambda row: row["event_score"], reverse=True)
     predicted = sorted(int(row["frame_idx"]) for row in ranked[:4])
@@ -132,7 +141,7 @@ def evaluate_one(
         if int(row["frame_idx"]) not in truth_set
     ]
     exact = tolerant_matches(predicted, truth, 0)
-    return {
+    result = {
         "sample_id": sample_id,
         "video_path": str(video_path),
         "frame_count": len(frame_rows),
@@ -149,6 +158,15 @@ def evaluate_one(
         "clean_score_mean": mean(clean_scores),
         "frame_average_precision": average_precision(frame_rows, truth_set),
     }
+    if save_frame_scores:
+        result["frame_scores"] = [
+            {
+                "frame_idx": int(row["frame_idx"]),
+                "event_score": float(row["event_score"]),
+            }
+            for row in frame_rows
+        ]
+    return result
 
 
 def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -222,8 +240,15 @@ def main() -> int:
         sample_id = int(Path(record["video_path"]).stem)
         output_path = sample_dir / f"{sample_id:08d}.json"
         if output_path.exists() and not args.overwrite:
-            print(f"[skip] rank={rank} sample={sample_id:08d}", flush=True)
-            continue
+            existing = json.loads(output_path.read_text(encoding="utf-8"))
+            if not args.save_frame_scores or "frame_scores" in existing:
+                print(f"[skip] rank={rank} sample={sample_id:08d}", flush=True)
+                continue
+            print(
+                f"[refresh] rank={rank} sample={sample_id:08d} "
+                "missing full frame scores",
+                flush=True,
+            )
         video_path = args.dataset_root / record["video_path"]
         truth_path = args.kv_diff_root / f"{sample_id:08d}.pt"
         truth = load_ground_truth(truth_path)
@@ -235,7 +260,13 @@ def main() -> int:
         frame_rows = score_video_frames(
             video_path, qwen, processor, detector, device, qwen_dtype, args
         )
-        row = evaluate_one(sample_id, video_path, truth, frame_rows)
+        row = evaluate_one(
+            sample_id,
+            video_path,
+            truth,
+            frame_rows,
+            args.save_frame_scores,
+        )
         output_path.write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
         print(
             f"[result] id={sample_id:08d} pred={row['predicted_top4_frames']} "
@@ -258,6 +289,7 @@ def main() -> int:
             "sample_range": [start, end],
             "selection": "global_top4_without_temporal_suppression",
             "top_fraction_for_frame_score": args.top_fraction,
+            "full_frame_scores_saved": args.save_frame_scores,
             "metrics": aggregate(rows),
             "samples": rows,
         }

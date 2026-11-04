@@ -20,7 +20,9 @@ SEMANTIC_ROOT=${SEMANTIC_ROOT:-$RUN_ROOT/semantic}
 QA_ROOT=${QA_ROOT:-$RUN_ROOT/qa}
 VSR_PYTHON=${VSR_PYTHON:-/home/ZhangHuayu/miniconda3/envs/vsr_train/bin/python}
 QWEN35_PYTHON=${QWEN35_PYTHON:-/home/ZhangHuayu/miniconda3/envs/qwen35_vlm/bin/python}
-THRESHOLD_CONFIG=${THRESHOLD_CONFIG:-$VSR_ROOT/configs/event_threshold_recall90.json}
+THRESHOLD_CONFIG=${THRESHOLD_CONFIG:-$VSR_ROOT/configs/event_threshold_balanced.json}
+QA_EVENT_RETRIEVAL=${QA_EVENT_RETRIEVAL:-all}
+QA_MEMORY_VIEW=${QA_MEMORY_VIEW:-full}
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 export PYTHONNOUSERSITE=1
@@ -45,6 +47,14 @@ fi
 MAX_EVENT_ARGS=()
 if [[ -n "${MAX_MEMORY_EVENTS:-}" ]]; then
     MAX_EVENT_ARGS=(--max-memory-events "$MAX_MEMORY_EVENTS")
+fi
+
+QA_SELECTION_ARGS=(
+    --event-retrieval "$QA_EVENT_RETRIEVAL"
+    --memory-view "$QA_MEMORY_VIEW"
+)
+if [[ -n "${QA_EVENT_SCORE_THRESHOLD:-}" ]]; then
+    QA_SELECTION_ARGS+=(--event-score-threshold "$QA_EVENT_SCORE_THRESHOLD")
 fi
 
 run_detect() {
@@ -96,6 +106,7 @@ run_qa() {
         --source-parquet "$SOURCE_PARQUET" \
         --output-dir "$QA_ROOT" \
         --dtype "${DTYPE:-bfloat16}" \
+        "${QA_SELECTION_ARGS[@]}" \
         "${RANGE_ARGS[@]}" "$@"
 }
 

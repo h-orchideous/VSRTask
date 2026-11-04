@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "threshold": 1.0,
+  "selection_rule": "fixed_threshold_official_vsr_ablation",
+  "reference_threshold": 1.0890907049179077,
+  "reference_config": "configs/event_threshold_qwen35.json",
+  "checkpoint": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_qwen35_1_377_epoch10_4gpu/checkpoint-10.pt",
+  "score_definition": {
+    "layer_fusion": "mean",
+    "top_fraction": 0.05,
+    "aggregation": "mean_of_top_fraction_patch_scores"
+  },
+  "experiment_scope": "Official VSI-SUPER-Recall 10mins threshold ablation. This threshold is lower than the training-distribution calibration threshold to improve event recall."
+}

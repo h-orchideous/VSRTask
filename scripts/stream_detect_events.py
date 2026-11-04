@@ -37,6 +37,8 @@ from visualize_patch_diff_masks import build_detector
 from vsrtask.patch_diff_detector import fuse_qwen_layers
 from vsrtask.qwen_kv import capture_edited_kv_image
 
+JOB_TYPE = "qwen25_event_caption"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -194,7 +196,7 @@ def process_video(
                 semantic_relative = event_file(relative_video, frame_idx)
                 job = {
                     "schema_version": 1,
-                    "job_type": "qwen25_event_caption",
+                    "job_type": JOB_TYPE,
                     "video_path": str(relative_video),
                     "semantic_event_path": str(semantic_relative),
                     "event": event,

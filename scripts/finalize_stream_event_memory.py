@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from vsrtask.semantic_memory import semantic_memory_complete
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -28,12 +30,51 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+    queue_root = args.run_root / "queue"
+    queue_counts = {
+        name: len(list((queue_root / name).glob("*.json")))
+        for name in ("pending", "processing", "failed", "done")
+    }
+    if any(queue_counts[name] for name in ("pending", "processing", "failed")):
+        raise RuntimeError(
+            "Cannot finalize an incomplete semantic queue: "
+            + ", ".join(f"{name}={count}" for name, count in queue_counts.items())
+        )
     detection_root = args.run_root / "detection" / "memories"
     event_root = args.run_root / "semantic" / "events"
     output_root = args.run_root / "semantic" / "memories"
     detection_paths = sorted(detection_root.rglob("*.json"))
     if not detection_paths:
         raise FileNotFoundError(f"No detection memories under {detection_root}")
+
+    missing_events: list[Path] = []
+    invalid_events: list[Path] = []
+    for detection_path in detection_paths:
+        relative = detection_path.relative_to(detection_root)
+        detection = json.loads(detection_path.read_text(encoding="utf-8"))
+        for event in detection.get("events", []):
+            event_path = (
+                event_root
+                / relative.parent
+                / relative.stem
+                / f"frame_{int(event['peak_frame']):06d}.json"
+            )
+            if not event_path.is_file():
+                missing_events.append(event_path)
+                continue
+            payload = json.loads(event_path.read_text(encoding="utf-8"))
+            memory = (payload.get("event") or {}).get("episodic_memory")
+            if not semantic_memory_complete(memory):
+                invalid_events.append(event_path)
+    if missing_events or invalid_events:
+        examples = [
+            *(f"missing: {path}" for path in missing_events[:5]),
+            *(f"invalid: {path}" for path in invalid_events[:5]),
+        ]
+        raise RuntimeError(
+            f"Cannot finalize semantic events: missing={len(missing_events)} "
+            f"invalid={len(invalid_events)}; " + "; ".join(examples)
+        )
 
     total_events = 0
     model_names: set[str] = set()
@@ -81,23 +122,14 @@ def main() -> int:
                 "event_id": event["event_id"],
                 "frame": event["peak_frame"],
                 "seconds": event["peak_seconds"],
-                "counts": event["episodic_memory"]
+                "counts": event["episodic_memory"].get("objects")
+                or event["episodic_memory"]
                 .get("dynamic_scene_relationships", {})
                 .get("object_counts", []),
             }
             for event in semantic_events
         ]
-        relationships["location_relationship_evolution"] = [
-            {
-                "event_id": event["event_id"],
-                "frame": event["peak_frame"],
-                "seconds": event["peak_seconds"],
-                "relations": event["episodic_memory"]
-                .get("dynamic_scene_relationships", {})
-                .get("location_relationships", []),
-            }
-            for event in semantic_events
-        ]
+        relationships.pop("location_relationship_evolution", None)
         output_path = output_root / relative
         atomic_json(output_path, memory)
         output_paths.append(output_path)

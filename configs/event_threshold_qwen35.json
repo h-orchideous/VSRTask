@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "threshold": 1.0890907049179077,
+  "recall": 1.0,
+  "sampled_clean_fpr": 0.0,
+  "sampled_precision": 1.0,
+  "true_positives": 108,
+  "false_positives": 0,
+  "selection_rule": "highest_cached_window_threshold_meeting_target_recall",
+  "target_recall": 1.0,
+  "positive_windows": 108,
+  "sampled_clean_windows": 108,
+  "calibration_source": "outputs/qwen35_patchdiff_checkpoint10_eval_351_377_scores.json",
+  "checkpoint": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_qwen35_1_377_epoch10_4gpu/checkpoint-10.pt",
+  "score_definition": {
+    "layer_fusion": "mean",
+    "top_fraction": 0.05,
+    "aggregation": "mean_of_top_fraction_patch_scores"
+  },
+  "calibration_scope": "Cached edited windows and sampled clean windows from the training distribution. This is an initial operational threshold, not an independent held-out full-frame calibration."
+}

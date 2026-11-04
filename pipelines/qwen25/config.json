@@ -1,0 +1,14 @@
+{
+  "version": "qwen25",
+  "python": "/home/ZhangHuayu/miniconda3/envs/vsr_train/bin/python",
+  "model": "/data1/ZhangHuayu/models/Qwen2.5-VL-7B-Instruct",
+  "checkpoint": "/data1/ZhangHuayu/checkpoints/vsr_patch_diff_resumed_epoch10/checkpoint-10.pt",
+  "kv_diff_root": "/data1/ZhangHuayu/datasets/VSR-Train/kv_diff",
+  "kv_cache_root": "/data3/ZhangHuayu/VSR-Train/kv_features",
+  "threshold_config": "/home/ZhangHuayu/Workspace/VSRTask/configs/event_threshold_balanced.json",
+  "feature_layers": 28,
+  "visual_tokens": 391,
+  "kv_dim": 512,
+  "semantic_writer": "Qwen2.5-VL-7B-Instruct",
+  "qa_model": "Qwen2.5-VL-7B-Instruct"
+}

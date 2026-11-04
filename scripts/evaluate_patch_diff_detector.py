@@ -32,6 +32,7 @@ from vsrtask.patch_diff_detector import (
     fuse_qwen_layers,
     patch_diff_target,
 )
+from build_vsi_predicted_mask_videos import frame_anomaly_score
 
 
 def parse_args() -> argparse.Namespace:
@@ -172,6 +173,9 @@ def main() -> int:
                     "target_diff_mean": float(target.float().mean().cpu()),
                     "fused_prediction_mean": float(predicted_map.mean()),
                     "fused_prediction_max": float(predicted_map.max()),
+                    "event_score": frame_anomaly_score(
+                        predicted_map, args.top_fraction
+                    ),
                     "topk_iou": (
                         topk_iou(predicted_map, target_map, args.top_fraction)
                         if window.positive else None
@@ -189,6 +193,8 @@ def main() -> int:
         "positive_target_diff_mean": mean(positive, "target_diff_mean"),
         "positive_predicted_diff_mean": mean(positive, "predicted_nonnegative_mean"),
         "negative_predicted_diff_mean": mean(negative, "predicted_nonnegative_mean"),
+        "positive_event_score_mean": mean(positive, "event_score"),
+        "negative_event_score_mean": mean(negative, "event_score"),
         "positive_fused_prediction_mean": mean(positive, "fused_prediction_mean"),
         "negative_fused_prediction_mean": mean(negative, "fused_prediction_mean"),
         "positive_topk_iou": mean(positive, "topk_iou"),

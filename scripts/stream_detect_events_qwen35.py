@@ -35,6 +35,7 @@ def validate_checkpoint(path: Path) -> None:
 def main() -> int:
     validate_checkpoint(checkpoint_path())
     base.Qwen2_5_VLForConditionalGeneration = Qwen3_5ForConditionalGeneration
+    base.JOB_TYPE = "qwen35_event_caption"
     return base.main()
 
 

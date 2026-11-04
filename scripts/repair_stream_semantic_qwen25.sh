@@ -23,6 +23,8 @@ fi
 
 cd "$VSR_ROOT"
 echo "[repair] run_root=$RUN_ROOT semantic_gpus=$SEMANTIC_GPUS producers=$PRODUCER_COUNT"
+"$PYTHON_BIN" scripts/repair_semantic_event_files_qwen25.py \
+    --run-root "$RUN_ROOT"
 "$PYTHON_BIN" -m torch.distributed.run \
     --standalone \
     --nproc_per_node "$SEMANTIC_PROCESSES" \
@@ -35,4 +37,4 @@ echo "[repair] run_root=$RUN_ROOT semantic_gpus=$SEMANTIC_GPUS producers=$PRODUC
 "$PYTHON_BIN" scripts/finalize_stream_event_memory.py --run-root "$RUN_ROOT"
 "$PYTHON_BIN" scripts/validate_event_memory_pipeline.py \
     --run-root "$RUN_ROOT" \
-    --require-qa
+    --skip-qa

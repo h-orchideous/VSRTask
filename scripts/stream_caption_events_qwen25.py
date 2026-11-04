@@ -14,7 +14,8 @@ import torch.distributed as dist
 from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from caption_event_memory_qwen25 import describe_event, semantic_memory_complete
+from caption_event_memory_qwen25 import describe_event
+from vsrtask.semantic_memory import repair_semantic_memory, semantic_memory_complete
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +28,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", choices=("float16", "bfloat16"), default="bfloat16")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--poll-seconds", type=float, default=0.5)
+    parser.add_argument("--max-job-attempts", type=int, default=3)
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Move previously failed jobs back to pending and reset their attempts.",
+    )
     return parser.parse_args()
 
 
@@ -56,16 +63,32 @@ def semantic_output(run_root: Path, job: dict[str, Any]) -> Path:
     return run_root / "semantic" / "events" / job["semantic_event_path"]
 
 
-def recover_queue(run_root: Path) -> None:
+def recover_queue(run_root: Path, retry_failed: bool = False) -> None:
     queue = run_root / "queue"
     pending = queue / "pending"
     processing = queue / "processing"
     done = queue / "done"
-    for directory in (pending, processing, done, queue / "producers"):
+    for directory in (
+        pending,
+        processing,
+        done,
+        queue / "failed",
+        queue / "producers",
+    ):
         directory.mkdir(parents=True, exist_ok=True)
 
     for path in sorted(processing.glob("*.json")):
         os.replace(path, pending / path.name)
+    if retry_failed:
+        for path in sorted((queue / "failed").glob("*.json")):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            job.pop("semantic_attempts", None)
+            job.pop("last_semantic_error", None)
+            atomic_json(path, job)
+            os.replace(path, pending / path.name)
     for path in sorted(done.glob("*.json")):
         try:
             job = json.loads(path.read_text(encoding="utf-8"))
@@ -109,6 +132,35 @@ def queue_empty(run_root: Path) -> bool:
     )
 
 
+def handle_job_error(
+    claimed: Path,
+    run_root: Path,
+    error: Exception,
+    max_attempts: int,
+    rank: int,
+) -> None:
+    job = json.loads(claimed.read_text(encoding="utf-8"))
+    attempts = int(job.get("semantic_attempts", 0)) + 1
+    job["semantic_attempts"] = attempts
+    job["last_semantic_error"] = {
+        "type": type(error).__name__,
+        "message": str(error)[:1000],
+    }
+    atomic_json(claimed, job)
+    if attempts >= max_attempts:
+        target = run_root / "queue" / "failed" / claimed.name
+        status = "failed"
+    else:
+        target = run_root / "queue" / "pending" / claimed.name
+        status = "requeued"
+    os.replace(claimed, target)
+    print(
+        f"[memory-{status}] rank={rank} job={claimed.name} "
+        f"attempt={attempts}/{max_attempts} error={type(error).__name__}: {error}",
+        flush=True,
+    )
+
+
 def process_job(
     claimed: Path,
     run_root: Path,
@@ -123,24 +175,43 @@ def process_job(
     output_path = semantic_output(run_root, job)
     event = job["event"]
     output_complete = False
+    existing_payload = None
     if output_path.is_file():
         try:
             existing_payload = json.loads(output_path.read_text(encoding="utf-8"))
-            output_complete = semantic_memory_complete(
-                (existing_payload.get("event") or {}).get("episodic_memory")
-            )
+            existing_event = existing_payload.get("event") or {}
+            existing_memory = existing_event.get("episodic_memory")
+            output_complete = semantic_memory_complete(existing_memory)
+            if not output_complete:
+                repaired = repair_semantic_memory(existing_memory)
+                if repaired is not None:
+                    existing_event["episodic_memory"] = repaired
+                    atomic_json(output_path, existing_payload)
+                    output_complete = True
+                    print(
+                        f"[memory-repaired-local] rank={rank} "
+                        f"video={job['video_path']} frame={event['peak_frame']} "
+                        f"what={repaired.get('what')!r}",
+                        flush=True,
+                    )
         except (OSError, json.JSONDecodeError, AttributeError):
             output_complete = False
     if not output_complete:
         image_path = Path(event["evidence"]["original_image"])
+        overlay_path = Path(event["evidence"]["overlay_image"])
         with Image.open(image_path) as source:
-            image = source.convert("RGB")
+            original_image = source.convert("RGB")
+        with Image.open(overlay_path) as source:
+            overlay_image = source.convert("RGB")
         description = describe_event(
             model,
             processor,
-            image,
+            original_image,
+            overlay_image,
             device,
             args.max_new_tokens,
+            event.get("evidence", {}).get("selected_patch_indices"),
+            event.get("evidence", {}).get("token_grid"),
         )
         description["when"] = {
             "frame": event["peak_frame"],
@@ -179,11 +250,21 @@ def main() -> int:
     args = parse_args()
     if args.producer_count <= 0:
         raise ValueError("--producer-count must be positive")
+    if args.max_job_attempts <= 0:
+        raise ValueError("--max-job-attempts must be positive")
     device, rank, world_size = setup_distributed()
     if rank == 0:
-        recover_queue(args.run_root)
+        recover_queue(args.run_root, retry_failed=args.retry_failed)
     if world_size > 1:
         dist.barrier(device_ids=[device.index])
+
+    if producers_finished(args.run_root, args.producer_count) and queue_empty(
+        args.run_root
+    ):
+        print(f"[consumer-done] rank={rank} events=0 model_load_skipped=true", flush=True)
+        if world_size > 1:
+            dist.destroy_process_group()
+        return 0
 
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
     processor = AutoProcessor.from_pretrained(str(args.model), local_files_only=True)
@@ -201,8 +282,27 @@ def main() -> int:
     while True:
         claimed = claim_one(args.run_root)
         if claimed is not None:
-            process_job(claimed, args.run_root, model, processor, device, args, rank)
-            completed += 1
+            try:
+                process_job(
+                    claimed,
+                    args.run_root,
+                    model,
+                    processor,
+                    device,
+                    args,
+                    rank,
+                )
+                completed += 1
+            except Exception as error:
+                handle_job_error(
+                    claimed,
+                    args.run_root,
+                    error,
+                    args.max_job_attempts,
+                    rank,
+                )
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             continue
         if producers_finished(args.run_root, args.producer_count) and queue_empty(args.run_root):
             break
